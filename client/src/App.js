@@ -1,3 +1,5 @@
+// File: client/src/App.js
+
 import React, { useState, useEffect } from 'react';
 import { io } from 'socket.io-client';
 import MainMenu from './components/MainMenu';
@@ -12,7 +14,6 @@ function App() {
   const [socket, setSocket] = useState(null);
 
   useEffect(() => {
-    // Initialize socket connection
     const token = localStorage.getItem('chess_token');
     const newSocket = io(
       process.env.NODE_ENV === 'production' ? '' : 'http://localhost:5000',
@@ -38,6 +39,7 @@ function App() {
   }, []);
 
   const startGame = (config) => {
+    // config now includes: mode, difficulty (for AI), timeControl (5, 10, or 15 minutes)
     setGameConfig(config);
     if (config.mode === 'online') {
       setScreen('online');
@@ -76,6 +78,7 @@ function App() {
         {screen === 'online' && socket && (
           <OnlineGame
             socket={socket}
+            config={gameConfig}
             onBack={goToMenu}
           />
         )}

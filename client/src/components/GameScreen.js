@@ -1,8 +1,9 @@
 // File: client/src/components/GameScreen.js
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { ChevronLeft, RotateCcw, AlertTriangle, Flag } from 'lucide-react';
 import ChessBoard from './ChessBoard';
+import ChessTimer from './ChessTimer';
 import PromotionModal from './PromotionModal';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -30,6 +31,65 @@ const GameScreen = ({ config, onBack }) => {
   const [lastMove, setLastMove] = useState(null);
   const [promotionPending, setPromotionPending] = useState(null);
   const [moveHistory, setMoveHistory] = useState([]);
+  
+  // Timer state
+  const initialTime = (config.timeControl || 10) * 60; // Convert minutes to seconds
+  const [whiteTime, setWhiteTime] = useState(initialTime);
+  const [blackTime, setBlackTime] = useState(initialTime);
+  const [gameStarted, setGameStarted] = useState(false);
+  const timerRef = useRef(null);
+
+  // Timer logic
+  useEffect(() => {
+    // Clear any existing timer
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    // Only run timer if game has started, not over, and not thinking (for AI)
+    if (!gameStarted || gameOver || promotionPending) return;
+    if (config.mode === 'ai' && gameState.turn === 'black' && thinking) return;
+
+    timerRef.current = setInterval(() => {
+      if (gameState.turn === 'white') {
+        setWhiteTime(prev => {
+          if (prev <= 1) {
+            clearInterval(timerRef.current);
+            handleTimeOut('white');
+            return 0;
+          }
+          return prev - 1;
+        });
+      } else {
+        setBlackTime(prev => {
+          if (prev <= 1) {
+            clearInterval(timerRef.current);
+            handleTimeOut('black');
+            return 0;
+          }
+          return prev - 1;
+        });
+      }
+    }, 1000);
+
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, [gameState.turn, gameStarted, gameOver, thinking, promotionPending, config.mode]);
+
+  const handleTimeOut = (player) => {
+    const winner = player === 'white' ? 'black' : 'white';
+    const status = { 
+      over: true, 
+      result: 'timeout', 
+      winner: winner 
+    };
+    setGameOver(status);
+    saveGame(gameState, status);
+  };
 
   // Check for check position
   useEffect(() => {
@@ -43,7 +103,7 @@ const GameScreen = ({ config, onBack }) => {
 
   // AI move
   useEffect(() => {
-    if (config.mode === 'ai' && gameState.turn === 'black' && !gameOver && !promotionPending) {
+    if (config.mode === 'ai' && gameState.turn === 'black' && !gameOver && !promotionPending && gameStarted) {
       setThinking(true);
       const timer = setTimeout(() => {
         const aiMove = getAIMove(gameState, config.difficulty);
@@ -54,9 +114,14 @@ const GameScreen = ({ config, onBack }) => {
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [gameState.turn, gameOver, promotionPending, config.mode, config.difficulty]);
+  }, [gameState.turn, gameOver, promotionPending, config.mode, config.difficulty, gameStarted]);
 
   const executeMove = useCallback((from, to) => {
+    // Start game on first move
+    if (!gameStarted) {
+      setGameStarted(true);
+    }
+
     const newState = cloneGameState(gameState);
     const notation = moveToNotation(newState, from, to);
     
@@ -68,7 +133,7 @@ const GameScreen = ({ config, onBack }) => {
     }
     
     finishMove(newState, notation, from, to);
-  }, [gameState]);
+  }, [gameState, gameStarted]);
 
   const finishMove = (newState, notation, from, to) => {
     newState.turn = newState.turn === 'white' ? 'black' : 'white';
@@ -120,7 +185,7 @@ const GameScreen = ({ config, onBack }) => {
       const game = await createRes.json();
 
       let result;
-      if (status.result === 'checkmate') {
+      if (status.result === 'checkmate' || status.result === 'timeout') {
         result = status.winner === 'white' ? 'win' : 'loss';
       } else if (status.result === 'resignation') {
         result = status.winner === 'white' ? 'win' : 'loss';
@@ -195,6 +260,9 @@ const GameScreen = ({ config, onBack }) => {
   }, [gameState, selected, validMoves, gameOver, thinking, config.mode, promotionPending, executeMove]);
 
   const resetGame = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+    }
     setGameState(cloneGameState(INITIAL_GAME_STATE));
     setSelected(null);
     setValidMoves([]);
@@ -203,6 +271,9 @@ const GameScreen = ({ config, onBack }) => {
     setLastMove(null);
     setMoveHistory([]);
     setPromotionPending(null);
+    setWhiteTime(initialTime);
+    setBlackTime(initialTime);
+    setGameStarted(false);
   };
 
   const resign = () => {
@@ -215,6 +286,23 @@ const GameScreen = ({ config, onBack }) => {
     saveGame(gameState, status);
   };
 
+  const getGameOverMessage = () => {
+    if (!gameOver) return '';
+    
+    switch (gameOver.result) {
+      case 'checkmate':
+        return `Checkmate! ${gameOver.winner === 'white' ? 'White' : 'Black'} wins!`;
+      case 'timeout':
+        return `Time out! ${gameOver.winner === 'white' ? 'White' : 'Black'} wins!`;
+      case 'stalemate':
+        return 'Stalemate - Draw!';
+      case 'resignation':
+        return `${gameOver.winner === 'white' ? 'White' : 'Black'} wins by resignation!`;
+      default:
+        return 'Game Over';
+    }
+  };
+
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-4">
       {/* Header */}
@@ -224,6 +312,9 @@ const GameScreen = ({ config, onBack }) => {
         </button>
         <span className="text-white font-medium">
           {config.mode === 'ai' ? `vs Computer (${config.difficulty})` : 'vs Friend'}
+        </span>
+        <span className="text-slate-400 text-sm">
+          • {config.timeControl} min
         </span>
       </div>
 
@@ -240,30 +331,89 @@ const GameScreen = ({ config, onBack }) => {
             : 'bg-slate-700 text-white'
         }`}>
           {gameOver 
-            ? gameOver.result === 'checkmate' 
-              ? `Checkmate! ${gameOver.winner === 'white' ? 'White' : 'Black'} wins!`
-              : gameOver.result === 'stalemate' 
-                ? 'Stalemate - Draw!'
-                : gameOver.result === 'resignation'
-                  ? `${gameOver.winner === 'white' ? 'White' : 'Black'} wins by resignation!`
-                  : 'Game Over'
+            ? getGameOverMessage()
             : thinking 
               ? '🤔 Computer thinking...' 
               : `${gameState.turn === 'white' ? '⚪ White' : '⚫ Black'} to move`}
         </div>
       </div>
 
-      {/* Chess Board */}
-      <ChessBoard
-        board={gameState.board}
-        onMove={handleBoardAction}
-        selectedSquare={selected}
-        validMoves={validMoves}
-        interactive={!gameOver && !thinking && !promotionPending}
-        inCheck={checkPos}
-        lastMove={lastMove}
-        flipped={config.mode === 'local' && gameState.turn === 'black'}
-      />
+      {/* Game Area with Timer */}
+      <div className="flex items-center gap-6">
+        {/* Left Timer (for larger screens) */}
+        <div className="hidden md:block">
+          <ChessTimer
+            whiteTime={whiteTime}
+            blackTime={blackTime}
+            activePlayer={gameState.turn}
+            gameOver={!!gameOver}
+            orientation="vertical"
+          />
+        </div>
+
+        {/* Chess Board - FIXED: No flipping for local multiplayer */}
+        <div className="flex flex-col items-center">
+          {/* Mobile Timer - Top (Black's time) */}
+          <div className="md:hidden mb-2 w-full">
+            <div className={`rounded-lg border-2 p-2 transition-all ${
+              gameState.turn === 'black' && !gameOver 
+                ? blackTime <= 10 
+                  ? 'bg-red-600 border-red-400 animate-pulse' 
+                  : blackTime <= 30 
+                    ? 'bg-orange-600 border-orange-400'
+                    : 'bg-slate-800 border-green-500' 
+                : 'bg-slate-700 border-slate-600'
+            }`}>
+              <div className="flex items-center justify-between text-white">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full bg-slate-900" />
+                  <span className="text-sm">Black</span>
+                </div>
+                <span className="font-mono text-lg font-bold">
+                  {Math.floor(blackTime / 60)}:{(blackTime % 60).toString().padStart(2, '0')}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <ChessBoard
+            board={gameState.board}
+            onMove={handleBoardAction}
+            selectedSquare={selected}
+            validMoves={validMoves}
+            interactive={!gameOver && !thinking && !promotionPending}
+            inCheck={checkPos}
+            lastMove={lastMove}
+            flipped={false} // FIXED: Always keep board orientation same
+          />
+
+          {/* Mobile Timer - Bottom (White's time) */}
+          <div className="md:hidden mt-2 w-full">
+            <div className={`rounded-lg border-2 p-2 transition-all ${
+              gameState.turn === 'white' && !gameOver 
+                ? whiteTime <= 10 
+                  ? 'bg-red-600 border-red-400 animate-pulse' 
+                  : whiteTime <= 30 
+                    ? 'bg-orange-600 border-orange-400'
+                    : 'bg-white border-green-500 text-slate-900' 
+                : 'bg-slate-200 border-slate-300 text-slate-600'
+            }`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full bg-white border border-slate-400" />
+                  <span className="text-sm">White</span>
+                </div>
+                <span className="font-mono text-lg font-bold">
+                  {Math.floor(whiteTime / 60)}:{(whiteTime % 60).toString().padStart(2, '0')}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Right side spacer for balance */}
+        <div className="hidden md:block w-[160px]" />
+      </div>
 
       {/* Controls */}
       <div className="mt-4 flex gap-2">

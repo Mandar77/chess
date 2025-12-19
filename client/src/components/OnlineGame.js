@@ -1,6 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+// File: client/src/components/OnlineGame.js
+
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ChevronLeft, Loader2, Flag, MessageCircle, X, Send } from 'lucide-react';
 import ChessBoard from './ChessBoard';
+import ChessTimer from './ChessTimer';
 import PromotionModal from './PromotionModal';
 import {
   INITIAL_GAME_STATE,
@@ -15,7 +18,7 @@ import {
   moveToNotation
 } from '../utils/chessLogic';
 
-const OnlineGame = ({ socket, onBack }) => {
+const OnlineGame = ({ socket, config, onBack }) => {
   const [status, setStatus] = useState('idle');
   const [gameState, setGameState] = useState(cloneGameState(INITIAL_GAME_STATE));
   const [gameId, setGameId] = useState(null);
@@ -33,12 +36,64 @@ const OnlineGame = ({ socket, onBack }) => {
   const [chatInput, setChatInput] = useState('');
   const [drawOffered, setDrawOffered] = useState(false);
 
+  // Timer state
+  const initialTime = (config?.timeControl || 10) * 60;
+  const [whiteTime, setWhiteTime] = useState(initialTime);
+  const [blackTime, setBlackTime] = useState(initialTime);
+  const [gameStarted, setGameStarted] = useState(false);
+  const timerRef = useRef(null);
+
+  // Timer logic
+  useEffect(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    if (!gameStarted || gameOver || promotionPending || status !== 'playing') return;
+
+    timerRef.current = setInterval(() => {
+      if (gameState.turn === 'white') {
+        setWhiteTime(prev => {
+          if (prev <= 1) {
+            clearInterval(timerRef.current);
+            handleTimeOut('white');
+            return 0;
+          }
+          return prev - 1;
+        });
+      } else {
+        setBlackTime(prev => {
+          if (prev <= 1) {
+            clearInterval(timerRef.current);
+            handleTimeOut('black');
+            return 0;
+          }
+          return prev - 1;
+        });
+      }
+    }, 1000);
+
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, [gameState.turn, gameStarted, gameOver, promotionPending, status]);
+
+  const handleTimeOut = (player) => {
+    const winner = player === 'white' ? 'black' : 'white';
+    setGameOver({ result: 'timeout', winner });
+    setStatus('ended');
+    socket.emit('game_over', { gameId, result: 'timeout', winnerId: null });
+  };
+
   useEffect(() => {
     if (!socket) return;
 
     socket.on('waiting_for_match', () => setStatus('searching'));
 
-    socket.on('match_found', ({ gameId, color, opponent }) => {
+    socket.on('match_found', ({ gameId, color, opponent, timeControl }) => {
       setGameId(gameId);
       setMyColor(color);
       setOpponent(opponent);
@@ -48,9 +103,20 @@ const OnlineGame = ({ socket, onBack }) => {
       setMessages([]);
       setGameOver(null);
       setDrawOffered(false);
+      // Use the time control from server or fallback to config
+      const time = (timeControl || config?.timeControl || 10) * 60;
+      setWhiteTime(time);
+      setBlackTime(time);
+      setGameStarted(false);
     });
 
-    socket.on('opponent_move', ({ move }) => {
+    socket.on('opponent_move', ({ move, whiteTimeLeft, blackTimeLeft }) => {
+      if (!gameStarted) setGameStarted(true);
+      
+      // Sync time from server if provided
+      if (whiteTimeLeft !== undefined) setWhiteTime(whiteTimeLeft);
+      if (blackTimeLeft !== undefined) setBlackTime(blackTimeLeft);
+
       setGameState(prev => {
         const newState = cloneGameState(prev);
         const notation = moveToNotation(newState, move.from, move.to);
@@ -97,7 +163,7 @@ const OnlineGame = ({ socket, onBack }) => {
       socket.off('draw_declined');
       socket.off('chat_message');
     };
-  }, [socket]);
+  }, [socket, config?.timeControl, gameStarted]);
 
   useEffect(() => {
     const isWhiteTurn = gameState.turn === 'white';
@@ -108,10 +174,19 @@ const OnlineGame = ({ socket, onBack }) => {
     }
   }, [gameState]);
 
-  const findMatch = () => { socket.emit('find_match'); setStatus('searching'); };
-  const cancelSearch = () => { socket.emit('cancel_matchmaking'); setStatus('idle'); };
+  const findMatch = () => { 
+    socket.emit('find_match', { timeControl: config?.timeControl || 10 }); 
+    setStatus('searching'); 
+  };
+  
+  const cancelSearch = () => { 
+    socket.emit('cancel_matchmaking'); 
+    setStatus('idle'); 
+  };
 
   const executeMove = useCallback((from, to, promotion = null) => {
+    if (!gameStarted) setGameStarted(true);
+
     const newState = cloneGameState(gameState);
     const notation = moveToNotation(newState, from, to);
     applyMoveToBoard(newState, from, to);
@@ -126,14 +201,21 @@ const OnlineGame = ({ socket, onBack }) => {
     setLastMove({ from, to });
     setSelected(null);
     setValidMoves([]);
-    socket.emit('make_move', { gameId, move: { from, to, promotion } });
+    
+    socket.emit('make_move', { 
+      gameId, 
+      move: { from, to, promotion },
+      whiteTimeLeft: whiteTime,
+      blackTimeLeft: blackTime
+    });
+    
     const gameStatus = getGameStatus(newState);
     if (gameStatus.over) {
       setGameOver(gameStatus);
       setStatus('ended');
       socket.emit('game_over', { gameId, result: gameStatus.result, winnerId: null });
     }
-  }, [gameState, gameId, socket]);
+  }, [gameState, gameId, socket, gameStarted, whiteTime, blackTime]);
 
   const handlePromotion = (piece) => {
     if (!promotionPending) return;
@@ -192,13 +274,25 @@ const OnlineGame = ({ socket, onBack }) => {
     setChatInput('');
   };
 
+  const getGameOverMessage = () => {
+    if (!gameOver) return '';
+    switch (gameOver.result) {
+      case 'checkmate': return `Checkmate! ${gameOver.winner === myColor ? 'You win!' : 'You lose!'}`;
+      case 'timeout': return `Time out! ${gameOver.winner === myColor ? 'You win!' : 'You lose!'}`;
+      case 'draw': return 'Draw!';
+      case 'resignation': return gameOver.resignedBy ? `${gameOver.resignedBy} resigned` : 'Resignation';
+      default: return 'Game Over';
+    }
+  };
+
   if (status === 'idle') {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-4">
         <button onClick={onBack} className="absolute top-4 left-4 text-slate-300 hover:text-white flex items-center gap-1">
           <ChevronLeft size={20} /> Back
         </button>
-        <h2 className="text-2xl font-bold text-white mb-4">Online Play</h2>
+        <h2 className="text-2xl font-bold text-white mb-2">Online Play</h2>
+        <p className="text-slate-400 mb-4">Time Control: {config?.timeControl || 10} minutes</p>
         <button onClick={findMatch} className="px-8 py-4 bg-gradient-to-r from-cyan-600 to-blue-600 text-white rounded-xl font-medium text-lg hover:opacity-90 transition">
           Find Match
         </button>
@@ -210,7 +304,8 @@ const OnlineGame = ({ socket, onBack }) => {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-4">
         <Loader2 className="animate-spin text-white mb-4" size={48} />
-        <p className="text-white text-lg mb-4">Looking for opponent...</p>
+        <p className="text-white text-lg mb-2">Looking for opponent...</p>
+        <p className="text-slate-400 mb-4">Time Control: {config?.timeControl || 10} min</p>
         <button onClick={cancelSearch} className="px-6 py-2 bg-slate-600 text-white rounded-lg hover:bg-slate-700 transition">Cancel</button>
       </div>
     );
@@ -225,10 +320,78 @@ const OnlineGame = ({ socket, onBack }) => {
       </div>
 
       <div className={`mb-4 px-4 py-2 rounded-lg font-medium ${gameOver ? 'bg-yellow-500 text-black' : gameState.turn === myColor ? 'bg-green-600 text-white' : 'bg-slate-600 text-white'}`}>
-        {gameOver ? (gameOver.result === 'checkmate' ? `Checkmate! ${gameOver.winner === myColor ? 'You win!' : 'You lose!'}` : gameOver.result === 'draw' ? 'Draw!' : gameOver.result === 'resignation' ? `${gameOver.resignedBy} resigned` : 'Game Over') : (gameState.turn === myColor ? 'Your turn' : "Opponent's turn")}
+        {gameOver ? getGameOverMessage() : (gameState.turn === myColor ? 'Your turn' : "Opponent's turn")}
       </div>
 
-      <ChessBoard board={gameState.board} onMove={handleBoardAction} selectedSquare={selected} validMoves={validMoves} interactive={status === 'playing' && gameState.turn === myColor && !gameOver} inCheck={checkPos} lastMove={lastMove} flipped={myColor === 'black'} />
+      {/* Game Area with Timer */}
+      <div className="flex items-center gap-6">
+        <div className="hidden md:block">
+          <ChessTimer
+            whiteTime={whiteTime}
+            blackTime={blackTime}
+            activePlayer={gameState.turn}
+            gameOver={!!gameOver}
+            orientation="vertical"
+          />
+        </div>
+
+        <div className="flex flex-col items-center">
+          {/* Mobile Timer - Opponent's time on top */}
+          <div className="md:hidden mb-2 w-full">
+            <div className={`rounded-lg border-2 p-2 transition-all ${
+              gameState.turn !== myColor && !gameOver 
+                ? (myColor === 'white' ? blackTime : whiteTime) <= 10 
+                  ? 'bg-red-600 border-red-400 animate-pulse' 
+                  : 'bg-slate-800 border-green-500' 
+                : 'bg-slate-700 border-slate-600'
+            } text-white`}>
+              <div className="flex items-center justify-between">
+                <span className="text-sm">{opponent}</span>
+                <span className="font-mono text-lg font-bold">
+                  {(() => {
+                    const time = myColor === 'white' ? blackTime : whiteTime;
+                    return `${Math.floor(time / 60)}:${(time % 60).toString().padStart(2, '0')}`;
+                  })()}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <ChessBoard 
+            board={gameState.board} 
+            onMove={handleBoardAction} 
+            selectedSquare={selected} 
+            validMoves={validMoves} 
+            interactive={status === 'playing' && gameState.turn === myColor && !gameOver} 
+            inCheck={checkPos} 
+            lastMove={lastMove} 
+            flipped={myColor === 'black'} 
+          />
+
+          {/* Mobile Timer - Your time on bottom */}
+          <div className="md:hidden mt-2 w-full">
+            <div className={`rounded-lg border-2 p-2 transition-all ${
+              gameState.turn === myColor && !gameOver 
+                ? (myColor === 'white' ? whiteTime : blackTime) <= 10 
+                  ? 'bg-red-600 border-red-400 animate-pulse' 
+                  : 'bg-green-700 border-green-500' 
+                : 'bg-slate-700 border-slate-600'
+            } text-white`}>
+              <div className="flex items-center justify-between">
+                <span className="text-sm">You ({myColor})</span>
+                <span className="font-mono text-lg font-bold">
+                  {(() => {
+                    const time = myColor === 'white' ? whiteTime : blackTime;
+                    return `${Math.floor(time / 60)}:${(time % 60).toString().padStart(2, '0')}`;
+                  })()}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="hidden md:block w-[160px]" />
+      </div>
 
       <div className="mt-4 flex gap-2">
         {!gameOver && (

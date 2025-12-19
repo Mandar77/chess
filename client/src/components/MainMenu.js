@@ -1,15 +1,91 @@
 // File: client/src/components/MainMenu.js
 
 import React, { useState } from 'react';
-import { User, LogIn, LogOut, Users, Bot, History, Globe, Settings } from 'lucide-react';
+import { User, LogIn, LogOut, Users, Bot, History, Globe, Settings, Clock, X, Play } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import LoginModal from './LoginModal';
 import SettingsModal from './SettingsModal';
+
+// Game Setup Modal Component
+const GameSetupModal = ({ mode, difficulty, onStart, onClose }) => {
+  const [timeControl, setTimeControl] = useState(10);
+  
+  const timeOptions = [
+    { value: 5, label: '5 min', desc: 'Blitz' },
+    { value: 10, label: '10 min', desc: 'Rapid' },
+    { value: 15, label: '15 min', desc: 'Standard' }
+  ];
+
+  const getModeTitle = () => {
+    if (mode === 'ai') return `vs Computer (${difficulty})`;
+    if (mode === 'local') return 'vs Friend (Local)';
+    if (mode === 'online') return 'Online Match';
+    return 'New Game';
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <div className="bg-slate-800 rounded-xl p-6 w-full max-w-sm shadow-2xl border border-slate-700">
+        <div className="flex justify-between items-center mb-6">
+          <h2 className="text-xl font-bold text-white">{getModeTitle()}</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-white transition">
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Time Control Selection */}
+        <div className="mb-6">
+          <p className="text-slate-300 text-sm font-medium mb-3 flex items-center gap-2">
+            <Clock size={16} /> Select Time Control
+          </p>
+          <div className="grid grid-cols-3 gap-2">
+            {timeOptions.map(({ value, label, desc }) => (
+              <button
+                key={value}
+                onClick={() => setTimeControl(value)}
+                className={`py-3 px-2 rounded-lg font-medium transition flex flex-col items-center gap-1 border-2 ${
+                  timeControl === value 
+                    ? 'bg-blue-600 border-blue-400 text-white' 
+                    : 'bg-slate-700 border-slate-600 text-slate-300 hover:border-slate-500'
+                }`}
+              >
+                <span className="text-lg font-bold">{label}</span>
+                <span className="text-xs opacity-75">{desc}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Start Button */}
+        <button
+          onClick={() => onStart(timeControl)}
+          className="w-full py-3 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg font-medium hover:opacity-90 transition flex items-center justify-center gap-2"
+        >
+          <Play size={20} /> Start Game
+        </button>
+      </div>
+    </div>
+  );
+};
 
 const MainMenu = ({ onStartGame, onViewHistory, socket }) => {
   const { user, logout, loading } = useAuth();
   const [showLogin, setShowLogin] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [gameSetup, setGameSetup] = useState(null); // { mode, difficulty }
+
+  const handleGameSelect = (mode, difficulty = null) => {
+    setGameSetup({ mode, difficulty });
+  };
+
+  const handleStartGame = (timeControl) => {
+    onStartGame({
+      mode: gameSetup.mode,
+      difficulty: gameSetup.difficulty,
+      timeControl: timeControl // in minutes
+    });
+    setGameSetup(null);
+  };
 
   if (loading) {
     return (
@@ -90,7 +166,7 @@ const MainMenu = ({ onStartGame, onViewHistory, socket }) => {
             ].map(({ diff, emoji, color }) => (
               <button
                 key={diff}
-                onClick={() => onStartGame({ mode: 'ai', difficulty: diff })}
+                onClick={() => handleGameSelect('ai', diff)}
                 className={`py-3 rounded-lg font-medium transition flex flex-col items-center gap-1 ${color} text-white`}
               >
                 <span className="text-lg">{emoji}</span>
@@ -102,7 +178,7 @@ const MainMenu = ({ onStartGame, onViewHistory, socket }) => {
 
         {/* Play vs Friend (Local) */}
         <button
-          onClick={() => onStartGame({ mode: 'local' })}
+          onClick={() => handleGameSelect('local')}
           className="w-full py-3 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-700 transition flex items-center justify-center gap-2"
         >
           <Users size={20} /> Play vs Friend (Local)
@@ -110,7 +186,7 @@ const MainMenu = ({ onStartGame, onViewHistory, socket }) => {
 
         {/* Play Online */}
         <button
-          onClick={() => onStartGame({ mode: 'online' })}
+          onClick={() => handleGameSelect('online')}
           disabled={!user}
           className="w-full py-3 bg-gradient-to-r from-cyan-600 to-blue-600 text-white rounded-lg font-medium hover:opacity-90 transition flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
         >
@@ -142,6 +218,14 @@ const MainMenu = ({ onStartGame, onViewHistory, socket }) => {
       {/* Modals */}
       {showLogin && <LoginModal onClose={() => setShowLogin(false)} />}
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {gameSetup && (
+        <GameSetupModal 
+          mode={gameSetup.mode}
+          difficulty={gameSetup.difficulty}
+          onStart={handleStartGame}
+          onClose={() => setGameSetup(null)}
+        />
+      )}
     </div>
   );
 };
