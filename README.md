@@ -61,8 +61,6 @@ A full-featured chess application with real-time multiplayer support, computer o
 
 ## 📸 Screenshots
 
-> *Add screenshots of your application here*
-
 | Home Screen | Game Board | AI Analysis |
 |-------------|------------|-------------|
 | ![Home](screenshots/home.png) | ![Game](screenshots/game.png) | ![Analysis](screenshots/analysis.png) |
